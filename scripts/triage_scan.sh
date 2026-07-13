@@ -22,18 +22,51 @@
 # bound the wall-clock time yourself, e.g.:
 #     timeout 120 bash triage_scan.sh <path>
 #
-# Usage:  bash triage_scan.sh <path-to-repo>
+# Usage:  bash triage_scan.sh [--json] [--output FILE] <path-to-repo>
 # Exit:   0 = ran (triage is informational, not a gate); 2 = bad arguments; 3 = over limit in strict mode.
+# --json  Output structured JSON instead of human-readable format (for CI/tool integration)
+# --output FILE  Write output to FILE instead of stdout
 
 set -uo pipefail
 
-if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
-  echo "usage: bash triage_scan.sh <path-to-repo>"; exit 0
+# Parse command-line options
+JSON_MODE=0
+OUTPUT_FILE=""
+TARGET=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)
+      echo "usage: bash triage_scan.sh [--json] [--output FILE] <path-to-repo>"
+      echo "  --json              Output structured JSON instead of human-readable format"
+      echo "  --output FILE       Write output to FILE instead of stdout"
+      exit 0
+      ;;
+    --json)
+      JSON_MODE=1
+      shift
+      ;;
+    --output)
+      shift
+      if [[ -z "${1:-}" ]]; then
+        echo "error: --output requires a filename" >&2; exit 2
+      fi
+      OUTPUT_FILE="$1"
+      shift
+      ;;
+    -*)
+      echo "error: unknown option: $1" >&2; exit 2
+      ;;
+    *)
+      TARGET="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "${TARGET:-}" ]]; then
+  echo "usage: bash triage_scan.sh [--json] [--output FILE] <path-to-repo>" >&2; exit 2
 fi
-if [[ -z "${1:-}" ]]; then
-  echo "usage: bash triage_scan.sh <path-to-repo>" >&2; exit 2
-fi
-TARGET="$1"
 if [[ ! -d "$TARGET" ]]; then
   echo "error: not a directory: $TARGET" >&2; exit 2
 fi
@@ -60,7 +93,58 @@ SRC_INC=( --include=*.py --include=*.js --include=*.mjs --include=*.cjs --includ
 TXT_INC=( --include=*.md --include=*.mdx --include=*.markdown --include=*.txt
           --include=*.json --include=*.yml --include=*.yaml --include=*.toml --include=*.env* )
 
-hr(){ printf '\n== %s ==\n' "$1"; }
+# JSON output accumulator
+declare -A JSON_FINDINGS
+declare -a JSON_CATEGORIES
+JSON_FINDINGS_COUNT=0
+SCAN_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')"
+SCRIPT_VERSION="$(cat "$(dirname "$0")/../VERSION" 2>/dev/null || echo 'unknown')"
+
+# Redirect output if --output FILE was specified
+if [[ -n "$OUTPUT_FILE" ]]; then
+  exec 1>"$OUTPUT_FILE" 2>&1
+fi
+
+# In JSON mode, save stdout to FD 3 for JSON output, then suppress all human output
+if [[ $JSON_MODE -eq 1 ]]; then
+  exec 3>&1      # save stdout to FD 3
+  exec 1>/dev/null 2>&1   # suppress human output
+fi
+
+# Output functions
+hr(){ 
+  if [[ $JSON_MODE -eq 0 ]]; then
+    printf '\n== %s ==\n' "$1"
+  fi
+}
+
+json_add_category(){
+  local category="$1"
+  if [[ $JSON_MODE -eq 1 ]]; then
+    JSON_CATEGORIES+=("$category")
+  fi
+}
+
+json_add_finding(){
+  local category="$1"
+  local finding="$2"
+  if [[ $JSON_MODE -eq 1 ]]; then
+    if [[ -z "${JSON_FINDINGS[$category]:-}" ]]; then
+      JSON_FINDINGS[$category]=""
+    fi
+    if [[ -n "${JSON_FINDINGS[$category]}" ]]; then
+      JSON_FINDINGS[$category]+=$'\n'
+    fi
+    JSON_FINDINGS[$category]+="$finding"
+    ((JSON_FINDINGS_COUNT++))
+  fi
+}
+
+output_line(){
+  if [[ $JSON_MODE -eq 0 ]]; then
+    echo "$@"
+  fi
+}
 
 # g(): recursive content grep. -r (not -R) does not follow symlinks while
 # recursing; -I skips binary files; vendor/generated dirs are excluded; the '--'
@@ -88,10 +172,55 @@ clean_paths(){ LC_ALL=C sed 's/[^[:print:]]/?/g'; }
 # vendor/generated dirs. Extra predicates are passed as arguments.
 tfind(){ find -P "$TARGET" '(' "${PRUNE[@]}" ')' -prune -o "$@" -print0 2>/dev/null; }
 
+json_escape(){
+  # Escape special characters for JSON string values
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g; s/\t/\\t/g; s/\n/\\n/g; s/\r/\\r/g'
+}
+
+json_output(){
+  # Output findings as structured JSON for CI/tool integration
+  # Use FD 3 when in JSON mode (to bypass stdout suppression)
+  local out_fd=1
+  [[ $JSON_MODE -eq 1 ]] && out_fd=3
+  
+  {
+    printf '{\n'
+    printf '  "version": 1,\n'
+    printf '  "scanner": "trust-issues",\n'
+    printf '  "scanner_version": "%s",\n' "$(json_escape "$SCRIPT_VERSION")"
+    printf '  "target": "%s",\n' "$(json_escape "$TARGET")"
+    printf '  "scan_timestamp": "%s",\n' "$SCAN_TIMESTAMP"
+    printf '  "total_findings": %d,\n' "$JSON_FINDINGS_COUNT"
+    printf '  "findings": {\n'
+    
+    local first=1
+    for cat in "${JSON_CATEGORIES[@]}"; do
+      if [[ $first -eq 0 ]]; then printf ',\n'; fi
+      printf '    "%s": ' "$(json_escape "$cat")"
+      printf '['
+      local first_finding=1
+      if [[ -n "${JSON_FINDINGS[$cat]:-}" ]]; then
+        while IFS= read -r line; do
+          [[ -z "$line" ]] && continue
+          if [[ $first_finding -eq 0 ]]; then printf ','; fi
+          printf '"%s"' "$(json_escape "$line")"
+          first_finding=0
+        done <<< "${JSON_FINDINGS[$cat]}"
+      fi
+      printf ']'
+      first=0
+    done
+    printf '\n'
+    printf '  },\n'
+    printf '  "notes": "read-only signature scan — manual review still required; this script does no online research"\n'
+    printf '}\n'
+  } >&"$out_fd"
+}
+
 HAVE_P=0; printf 'x\n' | grep -qP 'x' 2>/dev/null && HAVE_P=1
 
-echo "######## TRIAGE: $TARGET ########"
-echo "(read-only signature scan — manual review still required; this script does no online research)"
+output_line "######## TRIAGE: $TARGET ########"
+output_line "(read-only signature scan — manual review still required; this script does no online research)"
 
 hr "1. INVENTORY"
 echo "File types present:"
@@ -204,7 +333,13 @@ echo "-- destructive wipes --"
 g "${SRC_INC[@]}" -E 'rm\s+-rf\s+/(\s|$|\*)|shred\s+-|cipher\s+/w|mkfs\.|dd\s+if=/dev/(zero|urandom)\s+of=/dev/' | cap 8
 
 hr "SUMMARY"
-echo "Triage complete across 14 categories. This scan flags candidates only. Now do the"
-echo "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
-echo "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
-echo "intent. A clean triage does not clear the repo."
+output_line "Triage complete across 14 categories. This scan flags candidates only. Now do the"
+output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
+output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
+output_line "intent. A clean triage does not clear the repo."
+
+if [[ $JSON_MODE -eq 1 ]]; then
+  echo ""
+  json_output
+fi
+

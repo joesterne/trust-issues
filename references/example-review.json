@@ -1,0 +1,21 @@
+{
+  "version": 1,
+  "source": "example-skill",
+  "source_url": "https://github.com/example/example-skill",
+  "reviewed_by": ["security-researcher-1", "agent-architect"],
+  "review_date": "2024-01-15T19:30:45Z",
+  "target_commit": "abc123def456789...",
+  "verdict": "conditional",
+  "risk_level": "medium",
+  "scan_findings": {
+    "findings_count": 3,
+    "categories_flagged": ["remote-code-into-shell", "credential-harvesting"]
+  },
+  "manual_review_summary": "Scanner flagged curl|bash pattern in CI but review confirms it is downloading from trusted CDN with integrity checksum. Credential reads in initialization code are benign (reading non-secret env config). However, SKILL.md documentation is vague about error-handling for malformed inputs. Recommend clarifying input validation contract before production use.",
+  "conditions_if_conditional": "1) SKILL.md must document explicit input validation contract. 2) Maintainer must commit to code review before any changes to shell invocation code. 3) Recommend pinning dependencies and using SRI hashes.",
+  "evidence_file_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "artifacts": {
+    "scan_output": "scan_example-skill.json",
+    "detailed_notes": "example-skill_detailed_review.md"
+  }
+}

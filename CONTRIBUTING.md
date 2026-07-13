@@ -41,6 +41,17 @@ git push -u origin feat/catch-dns-tunneling
 # open a PR; CI must pass; we squash-merge
 ```
 
+## Recording Security Reviews
+
+When you perform a five-persona adversarial review of a skill, MCP server, or other artifact using this tool's SKILL.md framework:
+
+1. Run the scanner with JSON output: `bash scripts/triage_scan.sh --json --output scan_TARGET.json <path>`
+2. Conduct the five-persona manual review following SKILL.md (Acquire → Research → Scan → Reason → Decide)
+3. Document your findings in `reviews/` using the schema defined in `references/reviews-schema.md`
+4. See `references/example-review.json` for a complete example
+
+The reviews schema captures: verdict (approved/conditional/rejected), risk level, scanner findings, manual analysis summary, any conditions for approval, and links to supporting artifacts. This creates an audit trail for reproducible security decisions.
+
 ## Commit style
 
 Conventional Commits (`type(scope): summary`). It keeps the history readable and lets

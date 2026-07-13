@@ -1,0 +1,15 @@
+{
+  "name": "trust-issues",
+  "description": "Adversarial, attacker-minded security review of untrusted code before installing",
+  "version": "1.0.0-beta.1",
+  "type": "security-audit",
+  "activation": ["review this", "is this safe", "check this for malware", "audit this code", "trust-issues"],
+  "schema_version": 1,
+  "capabilities": ["static-analysis", "pattern-matching", "adversarial-reasoning"],
+  "threat_detection": ["credential-exfiltration", "command-injection", "remote-code-execution", "prompt-injection", "supply-chain-attack"],
+  "supported_targets": ["github-repos", "agent-skills", "mcp-servers", "npm-packages", "pip-packages", "local-files"],
+  "read_only": true,
+  "never_executes_code": true,
+  "min_review_layers": 2,
+  "review_layers": ["fast-pattern-scan", "five-persona-adversarial-read"]
+}
