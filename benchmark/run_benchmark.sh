@@ -38,6 +38,7 @@ declare -A EXPECT=(
   [prompt_injection_SKILL.md]="12"
   [reverse_shell.sh]="8"
   [ssh_key_theft.py]="7"
+  [uncommon_bug_footguns.py]="15"
   [evasive_obfuscated.py]="MISS"
 )
 

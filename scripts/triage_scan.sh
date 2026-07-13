@@ -79,6 +79,26 @@ fi
 MAX_BYTES="${TRUST_ISSUES_MAX_BYTES:-$((5 * 1024 * 1024))}"   # per-file cap, binary pass
 MAX_FILES="${TRUST_ISSUES_MAX_FILES:-50000}"                  # file-count ceiling
 STRICT="${TRUST_ISSUES_STRICT:-0}"
+
+validate_uint(){
+  local name="$1" value="$2"
+  if [[ ! "$value" =~ ^[0-9]+$ ]]; then
+    echo "error: $name must be a non-negative integer" >&2
+    exit 2
+  fi
+}
+
+validate_bool(){
+  local name="$1" value="$2"
+  if [[ ! "$value" =~ ^[01]$ ]]; then
+    echo "error: $name must be 0 or 1" >&2
+    exit 2
+  fi
+}
+
+validate_uint TRUST_ISSUES_MAX_BYTES "$MAX_BYTES"
+validate_uint TRUST_ISSUES_MAX_FILES "$MAX_FILES"
+validate_bool TRUST_ISSUES_STRICT "$STRICT"
 PRUNE=( -path '*/.git/*' -o -path '*/node_modules/*' -o -path '*/vendor/*'
         -o -path '*/dist/*' -o -path '*/build/*' -o -path '*/.venv/*'
         -o -path '*/venv/*' -o -path '*/.next/*' -o -path '*/target/*' )
@@ -100,8 +120,19 @@ JSON_FINDINGS_COUNT=0
 SCAN_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')"
 SCRIPT_VERSION="$(cat "$(dirname "$0")/../VERSION" 2>/dev/null || echo 'unknown')"
 
-# Redirect output if --output FILE was specified
+# Redirect output if --output FILE was specified. Refuse directories and missing
+# parents so a typo cannot silently create output in an unexpected location.
 if [[ -n "$OUTPUT_FILE" ]]; then
+  OUTPUT_PARENT="$(dirname -- "$OUTPUT_FILE")"
+  if [[ ! -d "$OUTPUT_PARENT" ]]; then
+    echo "error: output directory does not exist: $OUTPUT_PARENT" >&2; exit 2
+  fi
+  if [[ -d "$OUTPUT_FILE" ]]; then
+    echo "error: output path is a directory: $OUTPUT_FILE" >&2; exit 2
+  fi
+  if [[ -L "$OUTPUT_FILE" ]]; then
+    echo "error: refusing to write output through a symlink: $OUTPUT_FILE" >&2; exit 2
+  fi
   exec 1>"$OUTPUT_FILE" 2>&1
 fi
 
@@ -231,7 +262,7 @@ find -P "$TARGET" '(' "${PRUNE[@]}" ')' -prune -o -type f -exec wc -c {} + 2>/de
   | awk '{n=$1; $1=""; sub(/^[[:space:]]+/,""); printf "  %12d  %s\n", n, $0}'
 NFILES="$(tfind -type f | tr -cd '\0' | wc -c | tr -d ' ')"
 echo; echo "Files in scope: $NFILES  (ceiling TRUST_ISSUES_MAX_FILES=$MAX_FILES)"
-if (( NFILES > MAX_FILES )); then
+if (( 10#$NFILES > 10#$MAX_FILES )); then
   echo "  ⚠ over the file-count ceiling — content scans may be slow; run in a sandbox under 'timeout'."
   if [[ "$STRICT" == 1 ]]; then echo "  strict mode: aborting."; exit 3; fi
 fi
@@ -241,7 +272,7 @@ bin_hits=""
 while IFS= read -r -d '' f; do
   case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.webp|*.woff*|*.ttf|*.otf|*.pdf) continue;; esac
   sz="$(wc -c < "$f" 2>/dev/null || echo 0)"
-  if (( sz > MAX_BYTES )); then continue; fi
+  if (( 10#$sz > 10#$MAX_BYTES )); then continue; fi
   if file "$f" 2>/dev/null | grep -qiE 'executable|ELF|Mach-O|PE32|shared object|archive data|compiled'; then
     bin_hits+="  BINARY: $f -> $(file -b "$f" 2>/dev/null)"$'\n'
   fi
@@ -258,7 +289,7 @@ g -E '(curl|wget|fetch|iwr|Invoke-WebRequest)[^|]*\|[[:space:]]*(sudo[[:space:]]
 
 hr "5. DYNAMIC CODE EXECUTION / DESERIALIZATION"
 echo "-- Python --"
-g "${SRC_INC[@]}" -E '\b(eval|exec|compile)\s*\(|__import__\s*\(|os\.system\s*\(|subprocess\.[A-Za-z]+\([^)]*shell\s*=\s*True|pickle\.loads|yaml\.load\s*\((?!.*Loader)|marshal\.loads|ctypes|getattr\([^,]+,\s*[^)]*\)\s*\(' | cap 25
+g "${SRC_INC[@]}" -E '\b(eval|exec|compile)\s*\(|__import__\s*\(|os\.system\s*\(|subprocess\.[A-Za-z]+\([^)]*shell\s*=\s*True|pickle\.loads|yaml\.load\s*\(|marshal\.loads|ctypes|getattr\([^,]+,\s*[^)]*\)\s*\(' | cap 25
 echo "-- JS/TS --"
 g "${SRC_INC[@]}" -E '\beval\s*\(|new\s+Function\s*\(|child_process|execSync|spawnSync|vm\.runIn|require\(\s*[`"'"'"']child_process|process\.binding' | cap 25
 
@@ -332,8 +363,24 @@ g "${SRC_INC[@]}" -E 'GetAsyncKeyState|pynput|keylog|pyperclip|clipboard.*(get|p
 echo "-- destructive wipes --"
 g "${SRC_INC[@]}" -E 'rm\s+-rf\s+/(\s|$|\*)|shred\s+-|cipher\s+/w|mkfs\.|dd\s+if=/dev/(zero|urandom)\s+of=/dev/' | cap 8
 
+hr "15. UNCOMMON BUG CLASSES / EXPLOIT-PRONE FOOTGUNS"
+echo "-- archive extraction / path traversal / unsafe filesystem joins --"
+g "${SRC_INC[@]}" -E 'extractall\s*\(|ZipFile|TarFile|tarfile\.open|archive\.extract|adm-zip|unzipper|\.pipe\(.*createWriteStream|path\.join\([^)]*(req\.|request\.|params|query|body)|\.\./|\.\.\\|send_file\s*\(|send_from_directory\s*\(' | cap 20
+echo "-- unsafe temp files / TOCTOU-prone permission changes --"
+g "${SRC_INC[@]}" -E 'mktemp\s+-u|tempnam\s*\(|tmpnam\s*\(|NamedTemporaryFile\([^)]*delete\s*=\s*False|/tmp/[A-Za-z0-9_.-]+|chmod\s+777|chown\s+.*(/tmp|/var/tmp)|access\([^)]*\).*open\(' | cap 15
+echo "-- ReDoS / regex supplied by users or suspicious nested quantifiers --"
+g "${SRC_INC[@]}" -E 'RegExp\([^)]*(req\.|request\.|params|query|body)|re\.compile\([^)]*(request|params|query|input)|\([^)]*[+*][^)]*\)[+*]|\[[^]]+\][+*][+*]' | cap 15
+echo "-- XXE / unsafe XML parsers / entity expansion --"
+g "${SRC_INC[@]}" -E 'xml\.etree|lxml\.etree|BeautifulSoup\([^)]*xml|DocumentBuilderFactory|SAXParserFactory|XmlReader|DOCTYPE|ENTITY|resolve_entities\s*=\s*True|no_network\s*=\s*False' | cap 15
+echo "-- SSRF metadata endpoints / user-controlled outbound requests --"
+g "${SRC_INC[@]}" -E '169\.254\.169\.254|metadata\.google\.internal|100\.100\.100\.200|requests\.(get|post|put|patch|delete)\([^)]*(request|params|query|input)|fetch\([^)]*(req\.|request\.|params|query|body)|axios\.[a-z]+\([^)]*(req\.|request\.|params|query|body)' | cap 20
+echo "-- disabled TLS verification / weak randomness / hardcoded crypto footguns --"
+g "${SRC_INC[@]}" -E 'verify\s*=\s*False|rejectUnauthorized\s*:\s*false|NODE_TLS_REJECT_UNAUTHORIZED|InsecureSkipVerify|check_hostname\s*=\s*False|ssl\._create_unverified_context|Math\.random\(|random\.random\(|md5\s*\(|sha1\s*\(|AES.MODE_ECB|createCipher\s*\(' | cap 20
+echo "-- SQL/template/prototype pollution sinks --"
+g "${SRC_INC[@]}" -E 'SELECT .*\+|INSERT .*\+|UPDATE .*\+|DELETE .*\+|execute\([^)]*%|cursor\.execute\([^)]*\+|render_template_string|Template\([^)]*(request|params|query|input)|innerHTML\s*=|Object\.assign\([^)]*(req\.body|request\.body)|__proto__|constructor\.prototype' | cap 20
+
 hr "SUMMARY"
-output_line "Triage complete across 14 categories. This scan flags candidates only. Now do the"
+output_line "Triage complete across 15 categories. This scan flags candidates only. Now do the"
 output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
 output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
 output_line "intent. A clean triage does not clear the repo."
@@ -342,4 +389,3 @@ if [[ $JSON_MODE -eq 1 ]]; then
   echo ""
   json_output
 fi
-
