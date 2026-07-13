@@ -1,0 +1,39 @@
+# CI that dogfoods Trust Issues' own rules:
+#  - least privilege: read-only token, no secrets
+#  - safe trigger: pull_request (NOT pull_request_target, which runs fork code with secrets)
+#  - third-party action pinned by commit SHA, not a mutable tag
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read   # least privilege — this workflow needs nothing else
+
+jobs:
+  self-scan-and-benchmark:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout v4.2.2. VERIFY this SHA against github.com/actions/checkout
+      # before relying on it, then keep third-party actions pinned by commit SHA.
+      - name: Checkout
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Shell syntax check
+        run: |
+          bash -n scripts/triage_scan.sh
+          bash -n benchmark/run_benchmark.sh
+
+      - name: Shellcheck (advisory)
+        run: |
+          sudo apt-get update && sudo apt-get install -y shellcheck
+          shellcheck -S warning scripts/triage_scan.sh benchmark/run_benchmark.sh || true
+
+      - name: Dogfood — scan this repo with its own scanner
+        run: bash scripts/triage_scan.sh .
+
+      - name: Benchmark gate (fails on any unexpected miss)
+        run: bash benchmark/run_benchmark.sh --check

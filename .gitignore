@@ -1,0 +1,20 @@
+# secrets / env — never commit these
+.env
+.env.*
+*.env
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+.aws/
+.ssh/
+
+# review records & noise
+reviews/
+*.log
+.DS_Store
+__pycache__/
+
+# local project-management docs (not part of the shipped tool)
+.dev/

