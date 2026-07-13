@@ -17,12 +17,12 @@ This maps a maximalist 20-part adversarial-review checklist onto Trust Issues, s
 | 3 | Secure-coding standards (OWASP, CWE, ATT&CK, NIST SSDF, MISRA, SEI CERT…) | Catalog | `threat-catalog.md` §2, §9 |
 | 4 | Cryptography (weak hashing, ECB, hardcoded keys/IVs, TLS/JWT, key storage) | Catalog | `threat-catalog.md` §2 |
 | 5 | Authentication/authorization (creds, OAuth/JWT, IDOR, RBAC/ABAC, priv-esc) | Catalog | `threat-catalog.md` §2 |
-| 6 | Network security (HTTP/TLS, SSRF, CSRF, CORS, smuggling, sockets/listeners) | Core + Catalog | scanner §8; `threat-catalog.md` §2, §8 |
-| 7 | Memory safety (overflows, UAF, TOCTOU, races, thread safety) | Catalog | `threat-catalog.md` §1 |
+| 6 | Network security (HTTP/TLS, SSRF, CSRF, CORS, smuggling, sockets/listeners) | Core + Catalog | scanner §8, §15; `threat-catalog.md` §2, §8 |
+| 7 | Memory safety (overflows, UAF, TOCTOU, races, thread safety) | Core + Catalog | scanner §15; `threat-catalog.md` §1 |
 | 8 | Dependencies (CVEs, typosquat, dep-confusion, install hooks, lockfiles, transitive) | Core + Catalog | scanner §3, §11; `threat-catalog.md` §3 |
 | 9 | Build pipeline (Actions/GitLab/Jenkins, Docker, signing, secrets, runner/perms) | Core + Catalog | scanner §10; `threat-catalog.md` §3 |
 | 10 | Infrastructure (Docker/Terraform/K8s/Helm/Ansible, IAM, secrets) | If-applicable | `threat-catalog.md` §8 |
-| 11 | Software-engineering (architecture, DoS/complexity, deserialization, plugin sec) | Catalog | `threat-catalog.md` §1, §2 |
+| 11 | Software-engineering (architecture, DoS/complexity, deserialization, plugin sec) | Core + Catalog | scanner §5, §15; `threat-catalog.md` §1, §2 |
 | 12 | CISO (regulatory: HIPAA/PCI/SOC2/ISO/GDPR/SOX/FERPA, least priv, audit, 3rd-party) | Catalog + Report | `threat-catalog.md` §4; `report-template.md` §5 |
 | 13 | Network engineer (segmentation, firewall/VPN/NAT, amplification, in/outbound) | If-applicable | `threat-catalog.md` §8 |
 | 14 | Hardware/embedded (firmware, secure boot, TPM/HSM, JTAG/UART, DMA, side channels) | If-applicable | `threat-catalog.md` §8 |

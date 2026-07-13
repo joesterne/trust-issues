@@ -30,7 +30,7 @@ attacks. They exist so the scanner has something realistic to catch.
 
 | Metric | Result |
 |---|---|
-| Malicious recall | 10 / 11 (91%) |
+| Non-evasive malicious recall | 11 / 11 (100%) |
 | Missed (by design) | `evasive_obfuscated.py`, which assembles `os.environ` and its network call at runtime so no literal pattern matches |
 | Benign surfaced for review | 4 / 8 |
 
