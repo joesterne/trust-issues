@@ -387,13 +387,13 @@ g "${SRC_INC[@]}" -E 'verify\s*=\s*False|rejectUnauthorized\s*:\s*false|NODE_TLS
 echo "-- SQL/template/prototype pollution sinks --"
 g "${SRC_INC[@]}" -E 'SELECT .*\+|INSERT .*\+|UPDATE .*\+|DELETE .*\+|execute\([^)]*%|cursor\.execute\([^)]*\+|render_template_string|Template\([^)]*(request|params|query|input)|innerHTML\s*=|Object\.assign\([^)]*(req\.body|request\.body)|__proto__|constructor\.prototype' | cap 20
 
-hr "SUMMARY"
-output_line "Triage complete across 15 categories. This scan flags candidates only. Now do the"
-output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
-output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
-output_line "intent. A clean triage does not clear the repo."
-
-if [[ $JSON_MODE -eq 1 ]]; then
+if [[ $JSON_MODE -eq 0 ]]; then
+  hr "SUMMARY"
+  output_line "Triage complete across 15 categories. This scan flags candidates only. Now do the"
+  output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
+  output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
+  output_line "intent. A clean triage does not clear the repo."
+else
   echo ""
   json_output
 fi
