@@ -113,10 +113,12 @@ SRC_INC=( --include=*.py --include=*.js --include=*.mjs --include=*.cjs --includ
 TXT_INC=( --include=*.md --include=*.mdx --include=*.markdown --include=*.txt
           --include=*.json --include=*.yml --include=*.yaml --include=*.toml --include=*.env* )
 
-# JSON output accumulator
-declare -A JSON_FINDINGS
+# JSON output accumulator. Findings are persisted to a temp file because many
+# scan helpers run inside pipeline subshells; shell variables updated there would
+# be lost before json_output runs.
 declare -a JSON_CATEGORIES
-JSON_FINDINGS_COUNT=0
+JSON_TMP="$(mktemp "${TMPDIR:-/tmp}/trust-issues-json.XXXXXX")"
+trap 'rm -f "$JSON_TMP"' EXIT
 SCAN_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')"
 SCRIPT_VERSION="$(cat "$(dirname "$0")/../VERSION" 2>/dev/null || echo 'unknown')"
 
@@ -143,7 +145,9 @@ if [[ $JSON_MODE -eq 1 ]]; then
 fi
 
 # Output functions
-hr(){ 
+hr(){
+  CURRENT_CATEGORY="$1"
+  json_add_category "$CURRENT_CATEGORY"
   if [[ $JSON_MODE -eq 0 ]]; then
     printf '\n== %s ==\n' "$1"
   fi
@@ -156,24 +160,34 @@ json_add_category(){
   fi
 }
 
+json_sanitize_field(){
+  # Keep the TSV accumulator line-oriented and printable. Tabs/newlines are
+  # normalized by callers; any remaining C0 control bytes are represented with a
+  # visible JSON-style escape before the finding is persisted for serialization.
+  printf '%s' "$1" | LC_ALL=C perl -pe 's/([\x00-\x1F])/sprintf("\\u%04X", ord($1))/eg'
+}
+
 json_add_finding(){
   local category="$1"
   local finding="$2"
   if [[ $JSON_MODE -eq 1 ]]; then
-    if [[ -z "${JSON_FINDINGS[$category]:-}" ]]; then
-      JSON_FINDINGS[$category]=""
-    fi
-    if [[ -n "${JSON_FINDINGS[$category]}" ]]; then
-      JSON_FINDINGS[$category]+=$'\n'
-    fi
-    JSON_FINDINGS[$category]+="$finding"
-    ((JSON_FINDINGS_COUNT++))
+    # Append to a temp file instead of shell variables so findings produced inside
+    # pipeline subshells are not lost. Tabs/newlines are normalized for TSV safety.
+    category="${category//$'\t'/ }"
+    finding="${finding//$'\t'/ }"
+    finding="${finding//$'\n'/ }"
+    category="$(json_sanitize_field "$category")"
+    finding="$(json_sanitize_field "$finding")"
+    printf '%s\t%s\n' "$category" "$finding" >> "$JSON_TMP"
   fi
 }
 
 output_line(){
+  local line="$*"
   if [[ $JSON_MODE -eq 0 ]]; then
-    echo "$@"
+    echo "$line"
+  elif [[ -n "${CURRENT_CATEGORY:-}" ]]; then
+    json_add_finding "$CURRENT_CATEGORY" "$line"
   fi
 }
 
@@ -193,7 +207,13 @@ cap(){
     END {
       if (c == 0)      { print "  (none)" }
       else if (c > n)  { printf "  … showing %d of %d matches\n", n, c }
-    }'
+    }' | while IFS= read -r line; do
+      if [[ $JSON_MODE -eq 0 ]]; then
+        printf '%s\n' "$line"
+      elif [[ -n "${CURRENT_CATEGORY:-}" && "$line" != "  (none)" && "$line" != "  … showing "* ]]; then
+        json_add_finding "$CURRENT_CATEGORY" "$line"
+      fi
+    done
 }
 # strip non-printable characters from a displayed path (report-integrity: an
 # adversarial filename cannot smear the output). Does not affect what is scanned.
@@ -221,7 +241,7 @@ json_output(){
     printf '  "scanner_version": "%s",\n' "$(json_escape "$SCRIPT_VERSION")"
     printf '  "target": "%s",\n' "$(json_escape "$TARGET")"
     printf '  "scan_timestamp": "%s",\n' "$SCAN_TIMESTAMP"
-    printf '  "total_findings": %d,\n' "$JSON_FINDINGS_COUNT"
+    printf '  "total_findings": %d,\n' "$(wc -l < "$JSON_TMP" | tr -d ' ')"
     printf '  "findings": {\n'
     
     local first=1
@@ -230,14 +250,12 @@ json_output(){
       printf '    "%s": ' "$(json_escape "$cat")"
       printf '['
       local first_finding=1
-      if [[ -n "${JSON_FINDINGS[$cat]:-}" ]]; then
-        while IFS= read -r line; do
-          [[ -z "$line" ]] && continue
-          if [[ $first_finding -eq 0 ]]; then printf ','; fi
-          printf '"%s"' "$(json_escape "$line")"
-          first_finding=0
-        done <<< "${JSON_FINDINGS[$cat]}"
-      fi
+      while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        if [[ $first_finding -eq 0 ]]; then printf ','; fi
+        printf '"%s"' "$(json_escape "$line")"
+        first_finding=0
+      done < <(awk -F '\t' -v cat="$cat" '$1 == cat { print substr($0, length($1) + 2) }' "$JSON_TMP")
       printf ']'
       first=0
     done
@@ -268,16 +286,15 @@ if (( 10#$NFILES > 10#$MAX_FILES )); then
 fi
 
 hr "2. NON-TEXT / BINARY / HIGH-ENTROPY BLOBS (unexplained binaries are a red flag)"
-bin_hits=""
-while IFS= read -r -d '' f; do
+tfind -type f | while IFS= read -r -d '' f; do
   case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.svg|*.ico|*.webp|*.woff*|*.ttf|*.otf|*.pdf) continue;; esac
   sz="$(wc -c < "$f" 2>/dev/null || echo 0)"
   if (( 10#$sz > 10#$MAX_BYTES )); then continue; fi
-  if file "$f" 2>/dev/null | grep -qiE 'executable|ELF|Mach-O|PE32|shared object|archive data|compiled'; then
-    bin_hits+="  BINARY: $f -> $(file -b "$f" 2>/dev/null)"$'\n'
+  kind="$(file -b "$f" 2>/dev/null || true)"
+  if printf '%s\n' "$kind" | grep -qiE 'executable|ELF|Mach-O|PE32|shared object|archive data|compiled'; then
+    printf '  BINARY: %s -> %s\n' "$f" "$kind"
   fi
-done < <(tfind -type f)
-printf '%s' "$bin_hits" | clean_paths | cap 20
+done | clean_paths | cap 20
 echo "  minified / bundled JS (can hide payloads):"
 tfind -type f '(' -name '*.min.js' -o -name '*bundle*.js' ')' | tr '\0' '\n' | clean_paths | sed 's/^/    /' | cap 10
 
@@ -379,13 +396,13 @@ g "${SRC_INC[@]}" -E 'verify\s*=\s*False|rejectUnauthorized\s*:\s*false|NODE_TLS
 echo "-- SQL/template/prototype pollution sinks --"
 g "${SRC_INC[@]}" -E 'SELECT .*\+|INSERT .*\+|UPDATE .*\+|DELETE .*\+|execute\([^)]*%|cursor\.execute\([^)]*\+|render_template_string|Template\([^)]*(request|params|query|input)|innerHTML\s*=|Object\.assign\([^)]*(req\.body|request\.body)|__proto__|constructor\.prototype' | cap 20
 
-hr "SUMMARY"
-output_line "Triage complete across 15 categories. This scan flags candidates only. Now do the"
-output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
-output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
-output_line "intent. A clean triage does not clear the repo."
-
-if [[ $JSON_MODE -eq 1 ]]; then
+if [[ $JSON_MODE -eq 0 ]]; then
+  hr "SUMMARY"
+  output_line "Triage complete across 15 categories. This scan flags candidates only. Now do the"
+  output_line "manual adversarial read (SKILL.md steps 3-5): open every executable entrypoint, every"
+  output_line "SKILL.md / agent doc, every CI workflow, and every network call, and reason about"
+  output_line "intent. A clean triage does not clear the repo."
+else
   echo ""
   json_output
 fi
