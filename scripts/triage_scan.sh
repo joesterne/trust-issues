@@ -163,9 +163,17 @@ json_add_category(){
 
 json_sanitize_field(){
   # Keep the TSV accumulator line-oriented and printable. Tabs/newlines are
-  # normalized by callers; any remaining C0 control bytes are represented with a
-  # visible JSON-style escape before the finding is persisted for serialization.
-  printf '%s' "$1" | LC_ALL=C perl -pe 's/([\x00-\x1F])/sprintf("\\u%04X", ord($1))/eg'
+  # normalized by callers; any remaining C0 control bytes that Bash can store
+  # are represented with visible JSON-style escapes before persistence. Bash
+  # strings cannot contain NUL, so there is no byte 0 to rewrite here.
+  local value="$1" code oct ch esc
+  for code in {1..31}; do
+    printf -v oct '%03o' "$code"
+    printf -v ch '%b' "\\$oct"
+    printf -v esc '\\u%04X' "$code"
+    value="${value//$ch/$esc}"
+  done
+  printf '%s' "$value"
 }
 
 json_add_finding(){
