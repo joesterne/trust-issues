@@ -118,7 +118,8 @@ TXT_INC=( --include=*.md --include=*.mdx --include=*.markdown --include=*.txt
 # be lost before json_output runs.
 declare -a JSON_CATEGORIES
 JSON_TMP="$(mktemp "${TMPDIR:-/tmp}/trust-issues-json.XXXXXX")"
-trap 'rm -f "$JSON_TMP"' EXIT
+JSON_CAP_TMP="$(mktemp "${TMPDIR:-/tmp}/trust-issues-cap-totals.XXXXXX")"
+trap 'rm -f "$JSON_TMP" "$JSON_CAP_TMP"' EXIT
 SCAN_TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo 'unknown')"
 SCRIPT_VERSION="$(cat "$(dirname "$0")/../VERSION" 2>/dev/null || echo 'unknown')"
 
@@ -182,6 +183,17 @@ json_add_finding(){
   fi
 }
 
+json_add_match_total(){
+  local category="$1"
+  local shown="$2"
+  local total="$3"
+  if [[ $JSON_MODE -eq 1 && -n "$category" && "$total" =~ ^[0-9]+$ && "$total" -gt 0 ]]; then
+    category="${category//$'\t'/ }"
+    category="$(json_sanitize_field "$category")"
+    printf '%s\t%s\t%s\n' "$category" "$shown" "$total" >> "$JSON_CAP_TMP"
+  fi
+}
+
 output_line(){
   local line="$*"
   if [[ $JSON_MODE -eq 0 ]]; then
@@ -202,18 +214,38 @@ go(){ grep -rhoIE "${EXCLUDES[@]}" "$@" -- "$TARGET" 2>/dev/null; }
 # Implemented in awk so it counts without buffering the whole input in memory —
 # important when scanning a purpose-built denial-of-service tree.
 cap(){
-  awk -v n="${1:-10}" '
+  local n="${1:-10}"
+
+  if [[ $JSON_MODE -eq 0 ]]; then
+    awk -v n="$n" '
+      { c++; if (c <= n) print }
+      END {
+        if (c == 0)      { print "  (none)" }
+        else if (c > n)  { printf "  … showing %d of %d matches\n", n, c }
+      }'
+    return
+  fi
+
+  local total_file
+  total_file="$(mktemp "${TMPDIR:-/tmp}/trust-issues-cap.XXXXXX")"
+  awk -v n="$n" -v total_file="$total_file" '
     { c++; if (c <= n) print }
     END {
+      print c + 0 > total_file
       if (c == 0)      { print "  (none)" }
       else if (c > n)  { printf "  … showing %d of %d matches\n", n, c }
     }' | while IFS= read -r line; do
-      if [[ $JSON_MODE -eq 0 ]]; then
-        printf '%s\n' "$line"
-      elif [[ -n "${CURRENT_CATEGORY:-}" && "$line" != "  (none)" && "$line" != "  … showing "* ]]; then
+      if [[ -n "${CURRENT_CATEGORY:-}" && "$line" != "  (none)" && "$line" != "  … showing "* ]]; then
         json_add_finding "$CURRENT_CATEGORY" "$line"
       fi
     done
+
+  local total shown
+  total="$(cat "$total_file" 2>/dev/null || echo 0)"
+  shown="$total"
+  if (( 10#$shown > 10#$n )); then shown="$n"; fi
+  json_add_match_total "${CURRENT_CATEGORY:-}" "$shown" "$total"
+  rm -f "$total_file"
 }
 # strip non-printable characters from a displayed path (report-integrity: an
 # adversarial filename cannot smear the output). Does not affect what is scanned.
@@ -256,6 +288,24 @@ json_output(){
         printf '"%s"' "$(json_escape "$line")"
         first_finding=0
       done < <(awk -F '\t' -v cat="$cat" '$1 == cat { print substr($0, length($1) + 2) }' "$JSON_TMP")
+      printf ']'
+      first=0
+    done
+    printf '\n'
+    printf '  },\n'
+    printf '  "match_totals": {\n'
+    first=1
+    for cat in "${JSON_CATEGORIES[@]}"; do
+      if [[ $first -eq 0 ]]; then printf ',\n'; fi
+      printf '    "%s": ' "$(json_escape "$cat")"
+      printf '['
+      local first_total=1
+      while IFS=$'\t' read -r shown total; do
+        [[ -z "$shown" || -z "$total" ]] && continue
+        if [[ $first_total -eq 0 ]]; then printf ','; fi
+        printf '{"shown":%d,"total":%d}' "$shown" "$total"
+        first_total=0
+      done < <(awk -F '\t' -v cat="$cat" '$1 == cat { print $2 "\t" $3 }' "$JSON_CAP_TMP")
       printf ']'
       first=0
     done
